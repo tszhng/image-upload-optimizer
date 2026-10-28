@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>圖片上傳優化工具 · 800×600 · JPG · &lt;100KB</title>
+<meta name="theme-color" content="#2563eb" />
+<meta name="description" content="主體置中 4:3 智慧裁剪，輸出 800×600 JPG，檔案嚴格小於 100KB。純前端、離線可用。" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icon.svg" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="shell">
+
+  <header class="head">
+    <h1>圖片上傳優化工具</h1>
+    <p class="sub">主體置中 · 800×600 · JPG · 嚴格 &lt; 100&nbsp;KB</p>
+  </header>
+
+  <!-- ═══════════ 階段 1：上傳 ═══════════ -->
+  <section id="stageUpload" class="card">
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="選擇或拖放圖片">
+      <svg class="dz-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1" />
+        <path d="M12 4v12" /><path d="M8 8l4-4 4 4" />
+      </svg>
+      <p class="dz-title">點擊、拖放，或按 <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>V</kbd> 貼上</p>
+      <p class="dz-hint">支援 JPG / PNG / WebP，可一次多選（HEIC 依瀏覽器支援而定）</p>
+    </div>
+    <input id="fileInput" type="file" accept="image/*" multiple hidden />
+  </section>
+
+  <!-- ═══════════ 階段 2：框選主體 ═══════════ -->
+  <section id="stageEdit" class="card" hidden>
+    <div class="bar">
+      <h2>框選主體</h2>
+      <div class="bar-actions">
+        <button id="btnAdd" class="btn sm ghost">＋ 新增圖片</button>
+        <button id="btnAutoAll" class="btn sm ghost">全部自動偵測</button>
+        <button id="btnClear" class="btn sm ghost">清除</button>
+      </div>
+    </div>
+    <p class="hint">
+      拖曳藍框四角可縮放、拖曳框內可移動。<b>請讓藍框緊貼主體</b>，
+      系統會自動算出「主體居中且佔比 ≥&nbsp;70%」的 4:3 裁剪區（藍框外暗區即為最終畫面）。
+    </p>
+    <div id="grid" class="grid"></div>
+    <button id="btnProcess" class="btn primary block">開始處理</button>
+  </section>
+
+  <!-- ═══════════ 階段 3：處理中 ═══════════ -->
+  <section id="stageBusy" class="card" hidden>
+    <div class="busy">
+      <div class="busy-num"><span id="busyCount">0 / 0</span></div>
+      <p class="busy-label">圖片處理中，請稍候…</p>
+      <div class="track"><div id="busyBar" class="fill"></div></div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 階段 4：結果 ═══════════ -->
+  <section id="stageResult" class="card" hidden>
+    <div class="bar">
+      <h2>處理結果</h2>
+      <span id="summary" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>預覽</th><th>檔名</th><th>原始</th><th>優化後</th>
+            <th>佔比</th><th>驗證</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <p class="note">※ 只有「驗證全部通過」的圖片才會被打包進 ZIP。未通過者請調整框選後重試。</p>
+    <div class="actions">
+      <button id="btnReset" class="btn ghost">處理新一批</button>
+      <button id="btnZip" class="btn primary">下載全部（ZIP）</button>
+    </div>
+  </section>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
