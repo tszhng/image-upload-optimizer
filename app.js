@@ -7,12 +7,13 @@ const CFG = {
   OUT_W: 800,
   OUT_H: 600,
   RATIO: 4 / 3,
-  LIMIT: 102400,        // 100 KiB（嚴格小於）
-  MIN_COVERAGE: 0.70,   // 主體至少佔裁剪區 70%
+  LIMIT: 102400,
+  MIN_COVERAGE: 0.70,
   Q_START: 0.85,
   Q_STEP: 0.05,
   Q_FLOOR: 0.30,
-  MIN_BOX: 16,          // 原圖座標下的最小主體框邊長
+  MIN_BOX: 16,
+  DEFAULT_ZIP: 'optimized_800x600',
 };
 
 /* ══════════════════════════════════════════════════════════
@@ -28,15 +29,16 @@ const el = {
   busyCount: $('busyCount'), busyBar: $('busyBar'),
   tbody: $('tbody'), summary: $('summary'),
   btnReset: $('btnReset'), btnZip: $('btnZip'),
+  zipName: $('zipName'),
 };
 
 /* ══════════════════════════════════════════════════════════
    狀態
    ══════════════════════════════════════════════════════════ */
 const state = {
-  items: [],      // { id, file, img, box, crop }
-  results: [],    // { name, originalSize, blob, quality, checks, ok, coverage, thumbUrl }
-  thumbs: [],     // 需要 revoke 的 URL
+  items: [],
+  results: [],
+  thumbs: [],
   nextId: 1,
   busy: false,
 };
@@ -53,18 +55,58 @@ function fmtBytes(n) {
   return (n / 1048576).toFixed(2) + ' MB';
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (m) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
-  ));
-}
-
 function showStage(name) {
   el.stageUpload.hidden = name !== 'upload';
   el.stageEdit.hidden   = name !== 'edit';
   el.stageBusy.hidden   = name !== 'busy';
   el.stageResult.hidden = name !== 'result';
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* ══════════════════════════════════════════════════════════
+   檔名工具
+   ══════════════════════════════════════════════════════════ */
+function defaultOutName(name) {
+  const dot = name.lastIndexOf('.');
+  const base = (dot > 0 ? name.slice(0, dot) : name) || 'image';
+  return `${base}_800x600.jpg`;
+}
+
+// 清理使用者輸入的檔名：
+//   - 移除控制字元
+//   - 把路徑分隔與 Windows 非法字元改為底線
+//   - 去掉開頭與結尾的空白、點
+//   - forceExt 不為空時，強制副檔名為它（例如 '.jpg'）
+//   - 清理後為空則回退到 fallback
+function sanitizeFilename(raw, fallback, forceExt) {
+  let s = String(raw == null ? '' : raw).replace(/[\x00-\x1f]/g, '').trim();
+  s = s.replace(/[\\/:*?"<>|]/g, '_');
+  s = s.replace(/^[\s.]+|[\s.]+$/g, '');
+
+  if (forceExt) {
+    const re = /\.[a-z0-9]{1,5}$/i;
+    if (re.test(s)) s = s.replace(re, forceExt);
+    else s += forceExt;
+    s = s.replace(/^[\s.]+|[\s.]+$/g, '');
+  }
+
+  if (!s || (forceExt && s.toLowerCase() === forceExt.toLowerCase())) {
+    s = fallback;
+  }
+  return s;
+}
+
+// 若 usedSet 已有同名，自動加 _2、_3… 並記錄
+function uniqueName(name, usedSet) {
+  if (!usedSet.has(name)) { usedSet.add(name); return name; }
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext  = dot > 0 ? name.slice(dot) : '';
+  let n = 2;
+  let candidate = `${base}_${n}${ext}`;
+  while (usedSet.has(candidate)) { n++; candidate = `${base}_${n}${ext}`; }
+  usedSet.add(candidate);
+  return candidate;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -82,7 +124,7 @@ function loadImage(file) {
 }
 
 /* ══════════════════════════════════════════════════════════
-   自動偵測主體（純前端：Sobel 能量 + 中心先驗 + 能量分位框）
+   自動偵測主體
    ══════════════════════════════════════════════════════════ */
 function autoDetectBox(img) {
   const MAXS = 96;
@@ -97,7 +139,7 @@ function autoDetectBox(img) {
 
   let px;
   try { px = g2.getImageData(0, 0, w, h).data; }
-  catch (e) { return null; }              // 跨網域圖片會拋錯
+  catch (e) { return null; }
 
   const N = w * h;
   const gray = new Float32Array(N);
@@ -105,7 +147,6 @@ function autoDetectBox(img) {
     gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
   }
 
-  // Sobel 邊緣能量
   const energy = new Float32Array(N);
   let totalE = 0;
   for (let y = 1; y < h - 1; y++) {
@@ -120,9 +161,8 @@ function autoDetectBox(img) {
       totalE += m;
     }
   }
-  if (totalE < 1e-3) return null;         // 純色圖，無法判斷主體
+  if (totalE < 1e-3) return null;
 
-  // 中心先驗：越靠中心的能量權重越高（抑制背景邊緣搶焦）
   const cx0 = (w - 1) / 2, cy0 = (h - 1) / 2;
   const maxD = Math.hypot(cx0, cy0) || 1;
   let sw = 0, sx = 0, sy = 0;
@@ -141,7 +181,6 @@ function autoDetectBox(img) {
   }
   const cx = sx / sw, cy = sy / sw;
 
-  // 依到質心距離排序，取累積 62% 能量的半徑
   pts.sort((a, b) => Math.hypot(a[0] - cx, a[1] - cy) - Math.hypot(b[0] - cx, b[1] - cy));
   let acc = 0, R = 1;
   const target = sw * 0.62;
@@ -151,24 +190,16 @@ function autoDetectBox(img) {
   }
   R = Math.max(R, Math.min(w, h) * 0.12);
 
-  // 換算回原圖座標
   const k = img.width / w;
   let bx = (cx - R) * k;
   let by = (cy - R) * k;
   let bw = 2 * R * k;
   let bh = 2 * R * k;
 
-  // 比例限制在 [0.72, 1.45]，避免過於細長導致無法達到 70%
   const ratio = bw / bh;
-  if (ratio < 0.72) {
-    const nw = bh * 0.72;
-    bx -= (nw - bw) / 2; bw = nw;
-  } else if (ratio > 1.45) {
-    const nh = bw / 1.45;
-    by -= (nh - bh) / 2; bh = nh;
-  }
+  if (ratio < 0.72) { const nw = bh * 0.72; bx -= (nw - bw) / 2; bw = nw; }
+  else if (ratio > 1.45) { const nh = bw / 1.45; by -= (nh - bh) / 2; bh = nh; }
 
-  // 夾回圖片內
   bx = clamp(bx, 0, img.width - 1);
   by = clamp(by, 0, img.height - 1);
   bw = Math.min(bw, img.width - bx);
@@ -179,7 +210,6 @@ function autoDetectBox(img) {
 
 /* ══════════════════════════════════════════════════════════
    核心：由主體框推算 4:3 裁剪區
-   ── 條件：4:3、完整包含主體框、主體居中、主體佔比 ≥ 70%
    ══════════════════════════════════════════════════════════ */
 function computeCrop(imgW, imgH, box) {
   const w = Math.max(1, box.w);
@@ -187,21 +217,16 @@ function computeCrop(imgW, imgH, box) {
   const cx = box.x + w / 2;
   const cy = box.y + h / 2;
 
-  // 4:3 框要完整包含主體框，所需的最小高度：
-  //   H ≥ h  且  H·(4/3) ≥ w  →  H ≥ max(h, 0.75w)
   const H = Math.max(h, w * 0.75);
   const W = H * (4 / 3);
 
-  // 以主體中心為中心
   const sx = cx - W / 2;
   const sy = cy - H / 2;
 
-  // 邊界檢查（不允許平移，否則主體就不居中了）
   if (sx < -0.5 || sy < -0.5 || sx + W > imgW + 0.5 || sy + H > imgH + 0.5) {
     return { ok: false, reason: '主體太靠近畫面邊緣，居中裁剪會超出影像範圍' };
   }
 
-  // 佔比
   const coverage = (w * h) / (W * H);
   if (coverage < CFG.MIN_COVERAGE - 1e-9) {
     return {
@@ -210,17 +235,10 @@ function computeCrop(imgW, imgH, box) {
     };
   }
 
-  // 居中偏差（理論上為 0，仍做數值驗證）
   const devX = Math.abs((sx + W / 2) - cx);
   const devY = Math.abs((sy + H / 2) - cy);
 
-  return {
-    ok: true,
-    sx, sy, sw: W, sh: H,
-    coverage,
-    deviation: Math.max(devX, devY),
-    upscale: Math.max(W / imgW, H / imgH) < 1 ? 0 : 1, // 佔位，下面另算
-  };
+  return { ok: true, sx, sy, sw: W, sh: H, coverage, deviation: Math.max(devX, devY) };
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -239,8 +257,8 @@ function layoutCanvas(it, canvas, stage) {
 
   it._view = {
     cssW, cssH, dpr,
-    scale: canvas.width / it.img.width,   // 原圖 px → canvas px
-    cssScale: cssW / it.img.width,        // 原圖 px → CSS px
+    scale: canvas.width / it.img.width,
+    cssScale: cssW / it.img.width,
   };
 }
 
@@ -259,7 +277,6 @@ function drawItem(it, canvas) {
   const crop = it.crop;
   const boxOk = crop && crop.ok;
 
-  // ── 裁剪區外暗化 + 白框 + 三分線
   if (boxOk) {
     const L = crop.sx * s, T = crop.sy * s, W = crop.sw * s, H = crop.sh * s;
 
@@ -282,7 +299,6 @@ function drawItem(it, canvas) {
     ctx.stroke();
   }
 
-  // ── 主體框
   const b = it.box;
   const bx = b.x * s, by = b.y * s, bw = b.w * s, bh = b.h * s;
   const accent = boxOk ? '#3b82f6' : '#ef4444';
@@ -292,7 +308,6 @@ function drawItem(it, canvas) {
   ctx.setLineDash([]);
   ctx.strokeRect(bx, by, bw, bh);
 
-  // ── 四角把手
   const r = Math.max(4, 5 * v.dpr);
   ctx.fillStyle = '#ffffff';
   ctx.strokeStyle = accent;
@@ -313,7 +328,7 @@ function drawItem(it, canvas) {
    ══════════════════════════════════════════════════════════ */
 function hitTest(it, px, py) {
   const b = it.box;
-  const tol = 14 / (it._view ? it._view.cssScale : 1); // 14 CSS px 容差 → 原圖 px
+  const tol = 14 / (it._view ? it._view.cssScale : 1);
   const corners = [
     ['nw', b.x, b.y],
     ['ne', b.x + b.w, b.y],
@@ -340,7 +355,6 @@ function bindDrag(it, canvas, stage) {
 
   const toImg = (ev) => {
     const r = canvas.getBoundingClientRect();
-    const v = it._view;
     return {
       x: ((ev.clientX - r.left) / r.width) * it.img.width,
       y: ((ev.clientY - r.top) / r.height) * it.img.height,
@@ -387,8 +401,8 @@ function bindDrag(it, canvas, stage) {
     } else {
       let x1 = b0.x, y1 = b0.y;
       let x2 = b0.x + b0.w, y2 = b0.y + b0.h;
-      const vKey = mode[0]; // 'n' | 's'
-      const hKey = mode[1]; // 'w' | 'e'
+      const vKey = mode[0];
+      const hKey = mode[1];
       if (hKey === 'w') x1 = clamp(b0.x + dx, 0, x2 - MIN);
       if (hKey === 'e') x2 = clamp(b0.x + b0.w + dx, x1 + MIN, IW);
       if (vKey === 'n') y1 = clamp(b0.y + dy, 0, y2 - MIN);
@@ -455,7 +469,6 @@ function renderGrid() {
     card.className = 'item';
     card.dataset.id = String(it.id);
 
-    // 標題列
     const head = document.createElement('div');
     head.className = 'item-head';
     const name = document.createElement('span');
@@ -470,20 +483,17 @@ function renderGrid() {
     del.addEventListener('click', () => removeItem(it.id));
     head.append(name, del);
 
-    // 畫布
     const stage = document.createElement('div');
     stage.className = 'stage';
     const canvas = document.createElement('canvas');
     stage.appendChild(canvas);
 
-    // 狀態列
     const foot = document.createElement('div');
     foot.className = 'item-foot';
 
     card.append(head, stage, foot);
     el.grid.appendChild(card);
 
-    // 等瀏覽器完成佈局再繪製
     requestAnimationFrame(() => {
       it.crop = computeCrop(it.img.width, it.img.height, it.box);
       layoutCanvas(it, canvas, stage);
@@ -534,8 +544,7 @@ async function addFiles(fileList) {
 }
 
 /* ══════════════════════════════════════════════════════════
-   壓縮：先線性降質（0.85 → 0.30，每次 −0.05），
-        仍超標再二分搜尋
+   壓縮
    ══════════════════════════════════════════════════════════ */
 function toJpegBlob(canvas, quality) {
   return new Promise((resolve) => {
@@ -544,7 +553,6 @@ function toJpegBlob(canvas, quality) {
 }
 
 async function encodeUnderLimit(canvas) {
-  // 1) 線性掃描
   for (let q = CFG.Q_START; q >= CFG.Q_FLOOR - 1e-9; q -= CFG.Q_STEP) {
     const qq = Math.max(q, 0.01);
     const blob = await toJpegBlob(canvas, qq);
@@ -553,10 +561,7 @@ async function encodeUnderLimit(canvas) {
     }
   }
 
-  // 2) 二分搜尋（品質越低檔案越小，單調可二分）
-  let lo = 0.02;
-  let hi = CFG.Q_FLOOR;
-  let best = null;
+  let lo = 0.02, hi = CFG.Q_FLOOR, best = null;
   for (let i = 0; i < 7; i++) {
     const mid = (lo + hi) / 2;
     const blob = await toJpegBlob(canvas, mid);
@@ -569,7 +574,6 @@ async function encodeUnderLimit(canvas) {
   }
   if (best) return best;
 
-  // 3) 極限仍無法達標
   const blob = await toJpegBlob(canvas, 0.02);
   return { blob, quality: 0.02, ok: !!(blob && blob.size < CFG.LIMIT) };
 }
@@ -589,29 +593,24 @@ async function isJpegBlob(blob) {
 async function verifyResult(blob, canvas, crop) {
   const checks = [];
 
-  // ① 格式：JPG（以 magic number 驗證，不只看 MIME）
   const jpeg = await isJpegBlob(blob);
   checks.push({ key: 'fmt', label: 'JPG', ok: jpeg, detail: jpeg ? 'image/jpeg' : '格式不符' });
 
-  // ② 尺寸：精確 800×600
   const sizeOk = canvas.width === CFG.OUT_W && canvas.height === CFG.OUT_H;
   checks.push({
     key: 'size', label: '800×600', ok: sizeOk,
     detail: `${canvas.width}×${canvas.height}`,
   });
 
-  // ③ 檔案大小：嚴格小於 100 KiB
   const limitOk = blob.size < CFG.LIMIT;
   checks.push({ key: 'limit', label: '<100KB', ok: limitOk, detail: fmtBytes(blob.size) });
 
-  // ④ 主體佔比 ≥ 70%
   const coverOk = crop.coverage >= CFG.MIN_COVERAGE - 1e-9;
   checks.push({
     key: 'cover', label: '佔比≥70%', ok: coverOk,
     detail: (crop.coverage * 100).toFixed(1) + '%',
   });
 
-  // ⑤ 主體居中（偏差 < 0.5 原圖 px）
   const centerOk = crop.deviation < 0.5;
   checks.push({
     key: 'center', label: '主體居中', ok: centerOk,
@@ -641,37 +640,35 @@ async function processAll() {
   el.busyCount.textContent = `0 / ${total}`;
   el.busyBar.style.width = '0%';
 
+  // 預設檔名去重
+  const usedNames = new Set();
+
   for (const it of list) {
     try {
       const crop = it.crop;
 
-      // 離屏畫布：高品質縮放到 800×600
       const off = document.createElement('canvas');
       off.width = CFG.OUT_W;
       off.height = CFG.OUT_H;
       const octx = off.getContext('2d');
-      octx.fillStyle = '#ffffff';                       // JPG 無透明，先鋪白底
+      octx.fillStyle = '#ffffff';
       octx.fillRect(0, 0, off.width, off.height);
       octx.imageSmoothingEnabled = true;
       octx.imageSmoothingQuality = 'high';
-      octx.drawImage(
-        it.img,
-        crop.sx, crop.sy, crop.sw, crop.sh,
-        0, 0, CFG.OUT_W, CFG.OUT_H
-      );
+      octx.drawImage(it.img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, CFG.OUT_W, CFG.OUT_H);
 
-      // 壓到 100KB 以下
       const enc = await encodeUnderLimit(off);
-
-      // 驗證
       const checks = await verifyResult(enc.blob, off, crop);
       const allOk = checks.every((c) => c.ok);
 
       const thumbUrl = URL.createObjectURL(enc.blob);
       state.thumbs.push(thumbUrl);
 
+      const outName = uniqueName(defaultOutName(it.file.name), usedNames);
+
       state.results.push({
         name: it.file.name,
+        outName,
         originalSize: it.file.size,
         blob: enc.blob,
         quality: enc.quality,
@@ -684,6 +681,7 @@ async function processAll() {
       console.error('處理失敗：', it.file.name, err);
       state.results.push({
         name: it.file.name,
+        outName: defaultOutName(it.file.name),
         originalSize: it.file.size,
         blob: null,
         quality: 0,
@@ -705,7 +703,7 @@ async function processAll() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   結果表
+   結果表（含檔名可編輯）
    ══════════════════════════════════════════════════════════ */
 function renderResults() {
   el.tbody.innerHTML = '';
@@ -713,10 +711,10 @@ function renderResults() {
   const okCount = state.results.filter((r) => r.allOk).length;
   el.summary.textContent = `共 ${state.results.length} 張，通過 ${okCount} 張`;
 
-  for (let i = 0; i < state.results.length; i++) {
-    const r = state.results[i];
+  for (const r of state.results) {
     const tr = document.createElement('tr');
 
+    // 預覽
     const tdThumb = document.createElement('td');
     if (r.thumbUrl) {
       const img = document.createElement('img');
@@ -727,29 +725,47 @@ function renderResults() {
       tdThumb.textContent = '—';
     }
 
+    // 檔名（可編輯）
     const tdName = document.createElement('td');
-    const spanName = document.createElement('div');
-    spanName.className = 'fname';
-    spanName.textContent = r.name;
-    spanName.title = r.name;
-    tdName.appendChild(spanName);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'name-input';
+    input.value = r.outName;
+    input.title = '原始檔名：' + r.name;
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.addEventListener('input', () => {
+      r.outName = input.value;
+    });
+    input.addEventListener('blur', () => {
+      const cleaned = sanitizeFilename(r.outName, defaultOutName(r.name), '.jpg');
+      r.outName = cleaned;
+      input.value = cleaned;
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    });
+    tdName.appendChild(input);
 
+    // 原始大小
     const tdOrig = document.createElement('td');
     tdOrig.textContent = fmtBytes(r.originalSize);
 
+    // 優化後
     const tdNew = document.createElement('td');
     tdNew.className = r.allOk ? 'big-ok' : 'big-bad';
     tdNew.textContent = r.blob ? fmtBytes(r.blob.size) : '—';
 
+    // 佔比
     const tdCover = document.createElement('td');
     tdCover.textContent = (r.coverage * 100).toFixed(0) + '%';
 
+    // 驗證
     const tdChecks = document.createElement('td');
     const pill = document.createElement('span');
     pill.className = 'pill ' + (r.allOk ? 'y' : 'n');
     pill.textContent = r.allOk ? '通過' : '未通過';
     tdChecks.appendChild(pill);
-
     const wrap = document.createElement('div');
     wrap.style.marginTop = '4px';
     for (const c of r.checks) {
@@ -761,14 +777,26 @@ function renderResults() {
     }
     tdChecks.appendChild(wrap);
 
+    // 單張下載（使用編輯後的檔名）
     const tdAct = document.createElement('td');
     if (r.allOk && r.blob) {
       const a = document.createElement('a');
       a.className = 'btn sm ghost';
       a.style.textDecoration = 'none';
       a.href = r.thumbUrl;
-      a.download = zipNameFor(r.name, i);
       a.textContent = '下載';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const finalName = sanitizeFilename(r.outName, defaultOutName(r.name), '.jpg');
+        const url = URL.createObjectURL(r.blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = finalName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      });
       tdAct.appendChild(a);
     }
 
@@ -783,7 +811,7 @@ function renderResults() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   ZIP 打包（內建 store 模式，零依賴、離線可用）
+   ZIP 打包（store 模式、零依賴）
    ══════════════════════════════════════════════════════════ */
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -821,30 +849,28 @@ async function buildZip(entries) {
     const data = new Uint8Array(await e.blob.arrayBuffer());
     const crc = crc32(data);
 
-    // Local file header (30 + name)
     const lh = new Uint8Array(30 + nameBytes.length);
     const lv = new DataView(lh.buffer);
     lv.setUint32(0, 0x04034b50, true);
-    lv.setUint16(4, 20, true);        // version needed
-    lv.setUint16(6, 0x0800, true);    // UTF-8 檔名
-    lv.setUint16(8, 0, true);         // method 0 = store
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0x0800, true);
+    lv.setUint16(8, 0, true);
     lv.setUint16(10, time, true);
     lv.setUint16(12, date, true);
     lv.setUint32(14, crc, true);
     lv.setUint32(18, data.length, true);
     lv.setUint32(22, data.length, true);
     lv.setUint16(26, nameBytes.length, true);
-    lv.setUint16(28, 0, true);        // extra len
+    lv.setUint16(28, 0, true);
     lh.set(nameBytes, 30);
 
     locals.push(lh, data);
 
-    // Central directory record (46 + name)
     const ch = new Uint8Array(46 + nameBytes.length);
     const cv = new DataView(ch.buffer);
     cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(4, 20, true);        // version made by
-    cv.setUint16(6, 20, true);        // version needed
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
     cv.setUint16(8, 0x0800, true);
     cv.setUint16(10, 0, true);
     cv.setUint16(12, time, true);
@@ -853,12 +879,12 @@ async function buildZip(entries) {
     cv.setUint32(20, data.length, true);
     cv.setUint32(24, data.length, true);
     cv.setUint16(28, nameBytes.length, true);
-    cv.setUint16(30, 0, true);        // extra
-    cv.setUint16(32, 0, true);        // comment
-    cv.setUint16(34, 0, true);        // disk
-    cv.setUint16(36, 0, true);        // internal attrs
-    cv.setUint32(38, 0, true);        // external attrs
-    cv.setUint32(42, offset, true);   // local header offset
+    cv.setUint16(30, 0, true);
+    cv.setUint16(32, 0, true);
+    cv.setUint16(34, 0, true);
+    cv.setUint16(36, 0, true);
+    cv.setUint32(38, 0, true);
+    cv.setUint32(42, offset, true);
     ch.set(nameBytes, 46);
 
     centrals.push(ch);
@@ -867,7 +893,6 @@ async function buildZip(entries) {
 
   const cdSize = centrals.reduce((s, c) => s + c.length, 0);
 
-  // End of central directory
   const eocd = new Uint8Array(22);
   const ev = new DataView(eocd.buffer);
   ev.setUint32(0, 0x06054b50, true);
@@ -882,12 +907,6 @@ async function buildZip(entries) {
   return new Blob([...locals, ...centrals, eocd], { type: 'application/zip' });
 }
 
-function zipNameFor(name, index) {
-  const dot = name.lastIndexOf('.');
-  const base = (dot > 0 ? name.slice(0, dot) : name) || `image_${index + 1}`;
-  return `${base}_800x600.jpg`;
-}
-
 async function downloadZip() {
   const okList = state.results.filter((r) => r.allOk && r.blob);
   if (okList.length === 0) return;
@@ -897,24 +916,25 @@ async function downloadZip() {
   el.btnZip.textContent = '打包中…';
 
   try {
-    const used = new Map();
-    const entries = okList.map((r, i) => {
-      let name = zipNameFor(r.name, i);
-      if (used.has(name)) {
-        const n = used.get(name) + 1;
-        used.set(name, n);
-        name = name.replace(/\.jpg$/i, `_${n}.jpg`);
-      } else {
-        used.set(name, 0);
-      }
-      return { name, blob: r.blob };
+    // 使用使用者編輯後的檔名，並對重名去重
+    const used = new Set();
+    const entries = okList.map((r) => {
+      const cleaned = sanitizeFilename(r.outName, defaultOutName(r.name), '.jpg');
+      const finalName = uniqueName(cleaned, used);
+      return { name: finalName, blob: r.blob };
     });
 
     const zipBlob = await buildZip(entries);
     const url = URL.createObjectURL(zipBlob);
+
+    // 讀取使用者自訂 ZIP 名稱
+    let zipBase = sanitizeFilename(el.zipName.value, CFG.DEFAULT_ZIP, '');
+    zipBase = zipBase.replace(/\.zip$/i, '') || CFG.DEFAULT_ZIP;
+    const zipFileName = zipBase + '.zip';
+
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'optimized_800x600.zip';
+    a.download = zipFileName;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -941,6 +961,7 @@ function resetAll() {
   el.grid.innerHTML = '';
   el.tbody.innerHTML = '';
   el.busyBar.style.width = '0%';
+  el.zipName.value = CFG.DEFAULT_ZIP;
   showStage('upload');
 }
 
@@ -969,11 +990,9 @@ el.dropzone.addEventListener('drop', (e) => {
   if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
 });
 
-// 全域拖放（避免瀏覽器直接開啟檔案）
 window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => e.preventDefault());
 
-// 貼上
 document.addEventListener('paste', (e) => {
   const files = [];
   const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -1000,6 +1019,16 @@ el.btnClear.addEventListener('click', resetAll);
 el.btnProcess.addEventListener('click', processAll);
 el.btnReset.addEventListener('click', resetAll);
 el.btnZip.addEventListener('click', downloadZip);
+
+// ZIP 檔名：失焦時清理並補 .zip 邏輯
+el.zipName.addEventListener('blur', () => {
+  let v = el.zipName.value.replace(/\.zip$/i, '').trim();
+  v = sanitizeFilename(v, CFG.DEFAULT_ZIP, '');
+  el.zipName.value = v || CFG.DEFAULT_ZIP;
+});
+el.zipName.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); el.zipName.blur(); }
+});
 
 // 視窗尺寸變化 → 重繪
 let rzTimer = null;
