@@ -72,13 +72,15 @@ kbd{
   display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;
   border-bottom:1px solid var(--line);
 }
-.item-name{
-  font-size:13px;font-weight:600;color:#334155;flex:1;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+.item-head .name-input{
+  flex:1;min-width:0;max-width:none;
+  background:#f8fafc;border-color:var(--line);
 }
+.item-head .name-input:hover{background:#fff;border-color:#cbd5e1}
+.item-head .name-input:focus{background:#fff}
 .icon-btn{
   border:0;background:transparent;cursor:pointer;color:#94a3b8;
-  font-size:14px;line-height:1;padding:4px 6px;border-radius:6px;
+  font-size:14px;line-height:1;padding:4px 6px;border-radius:6px;flex:0 0 auto;
 }
 .icon-btn:hover{background:#fee2e2;color:var(--bad)}
 .stage{position:relative;display:block;line-height:0;background:#0f172a;touch-action:none}
@@ -121,8 +123,7 @@ td img{width:64px;height:48px;object-fit:cover;border-radius:6px;border:1px soli
 .pill.n{background:#fee2e2;color:#b91c1c}
 .note{font-size:12px;color:var(--muted);margin:12px 0 0}
 
-/* ───── 可編輯檔名 ───── */
-table td:nth-child(2){min-width:170px}
+/* ───── 可編輯檔名（共用） ───── */
 .name-input{
   width:100%;
   min-width:150px;
@@ -142,6 +143,7 @@ table td:nth-child(2){min-width:170px}
   outline:none;border-color:var(--brand);background:#fff;
   box-shadow:0 0 0 3px rgba(37,99,235,.15);
 }
+table td:nth-child(2){min-width:170px}
 
 /* ───── ZIP 檔名列 ───── */
 .zip-row{
