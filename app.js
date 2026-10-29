@@ -36,8 +36,8 @@ const el = {
    狀態
    ══════════════════════════════════════════════════════════ */
 const state = {
-  items: [],
-  results: [],
+  items: [],     // { id, file, img, box, crop, outName }
+  results: [],   // { ... , outName, name }
   thumbs: [],
   nextId: 1,
   busy: false,
@@ -72,12 +72,6 @@ function defaultOutName(name) {
   return `${base}_800x600.jpg`;
 }
 
-// 清理使用者輸入的檔名：
-//   - 移除控制字元
-//   - 把路徑分隔與 Windows 非法字元改為底線
-//   - 去掉開頭與結尾的空白、點
-//   - forceExt 不為空時，強制副檔名為它（例如 '.jpg'）
-//   - 清理後為空則回退到 fallback
 function sanitizeFilename(raw, fallback, forceExt) {
   let s = String(raw == null ? '' : raw).replace(/[\x00-\x1f]/g, '').trim();
   s = s.replace(/[\\/:*?"<>|]/g, '_');
@@ -96,7 +90,6 @@ function sanitizeFilename(raw, fallback, forceExt) {
   return s;
 }
 
-// 若 usedSet 已有同名，自動加 _2、_3… 並記錄
 function uniqueName(name, usedSet) {
   if (!usedSet.has(name)) { usedSet.add(name); return name; }
   const dot = name.lastIndexOf('.');
@@ -107,6 +100,28 @@ function uniqueName(name, usedSet) {
   while (usedSet.has(candidate)) { n++; candidate = `${base}_${n}${ext}`; }
   usedSet.add(candidate);
   return candidate;
+}
+
+// 在「框選階段」每張卡片使用：輸入即時同步、失焦時清理
+function attachNameInput(inputEl, item) {
+  inputEl.type = 'text';
+  inputEl.className = 'name-input';
+  inputEl.value = item.outName;
+  inputEl.title = '原始檔名：' + item.file.name;
+  inputEl.spellcheck = false;
+  inputEl.autocomplete = 'off';
+
+  inputEl.addEventListener('input', () => {
+    item.outName = inputEl.value;
+  });
+  inputEl.addEventListener('blur', () => {
+    const cleaned = sanitizeFilename(item.outName, defaultOutName(item.file.name), '.jpg');
+    item.outName = cleaned;
+    inputEl.value = cleaned;
+  });
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); inputEl.blur(); }
+  });
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -471,17 +486,19 @@ function renderGrid() {
 
     const head = document.createElement('div');
     head.className = 'item-head';
-    const name = document.createElement('span');
-    name.className = 'item-name';
-    name.textContent = it.file.name;
-    name.title = it.file.name;
+
+    // ★ 每張圖片的檔名輸入框（框選階段就能改）
+    const nameInput = document.createElement('input');
+    attachNameInput(nameInput, it);
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'icon-btn';
     del.title = '移除這張';
     del.textContent = '✕';
     del.addEventListener('click', () => removeItem(it.id));
-    head.append(name, del);
+
+    head.append(nameInput, del);
 
     const stage = document.createElement('div');
     stage.className = 'stage';
@@ -532,7 +549,15 @@ async function addFiles(fileList) {
         w: img.width * 0.7,
         h: img.height * 0.7,
       };
-      state.items.push({ id: state.nextId++, file, img, box, crop: null });
+      // ★ 新增 outName，預設為「原名 + _800x600.jpg」，可在框選階段修改
+      state.items.push({
+        id: state.nextId++,
+        file,
+        img,
+        box,
+        crop: null,
+        outName: defaultOutName(file.name),
+      });
     } catch (err) {
       console.warn(err);
     }
@@ -640,7 +665,7 @@ async function processAll() {
   el.busyCount.textContent = `0 / ${total}`;
   el.busyBar.style.width = '0%';
 
-  // 預設檔名去重
+  // 處理時若重名仍以「去重」呈現預覽，但結果表保留你輸入的名字
   const usedNames = new Set();
 
   for (const it of list) {
@@ -664,11 +689,16 @@ async function processAll() {
       const thumbUrl = URL.createObjectURL(enc.blob);
       state.thumbs.push(thumbUrl);
 
-      const outName = uniqueName(defaultOutName(it.file.name), usedNames);
+      // ★ 使用框選階段輸入的檔名（未清理者先清理一次）
+      const cleaned = sanitizeFilename(it.outName, defaultOutName(it.file.name), '.jpg');
+      it.outName = cleaned;
+
+      // 為避免同名覆蓋造成誤解，對結果仍記錄一個「去重後」的下載名
+      const uniqueOut = uniqueName(cleaned, usedNames);
 
       state.results.push({
         name: it.file.name,
-        outName,
+        outName: uniqueOut,       // 用於結果表顯示
         originalSize: it.file.size,
         blob: enc.blob,
         quality: enc.quality,
@@ -703,7 +733,7 @@ async function processAll() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   結果表（含檔名可編輯）
+   結果表（可再次編輯）
    ══════════════════════════════════════════════════════════ */
 function renderResults() {
   el.tbody.innerHTML = '';
@@ -714,7 +744,6 @@ function renderResults() {
   for (const r of state.results) {
     const tr = document.createElement('tr');
 
-    // 預覽
     const tdThumb = document.createElement('td');
     if (r.thumbUrl) {
       const img = document.createElement('img');
@@ -725,7 +754,7 @@ function renderResults() {
       tdThumb.textContent = '—';
     }
 
-    // 檔名（可編輯）
+    // 結果表也保留可編輯（以 isItem===false 走結果專用的 attacher）
     const tdName = document.createElement('td');
     const input = document.createElement('input');
     input.type = 'text';
@@ -734,9 +763,7 @@ function renderResults() {
     input.title = '原始檔名：' + r.name;
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.addEventListener('input', () => {
-      r.outName = input.value;
-    });
+    input.addEventListener('input', () => { r.outName = input.value; });
     input.addEventListener('blur', () => {
       const cleaned = sanitizeFilename(r.outName, defaultOutName(r.name), '.jpg');
       r.outName = cleaned;
@@ -747,20 +774,16 @@ function renderResults() {
     });
     tdName.appendChild(input);
 
-    // 原始大小
     const tdOrig = document.createElement('td');
     tdOrig.textContent = fmtBytes(r.originalSize);
 
-    // 優化後
     const tdNew = document.createElement('td');
     tdNew.className = r.allOk ? 'big-ok' : 'big-bad';
     tdNew.textContent = r.blob ? fmtBytes(r.blob.size) : '—';
 
-    // 佔比
     const tdCover = document.createElement('td');
     tdCover.textContent = (r.coverage * 100).toFixed(0) + '%';
 
-    // 驗證
     const tdChecks = document.createElement('td');
     const pill = document.createElement('span');
     pill.className = 'pill ' + (r.allOk ? 'y' : 'n');
@@ -777,7 +800,6 @@ function renderResults() {
     }
     tdChecks.appendChild(wrap);
 
-    // 單張下載（使用編輯後的檔名）
     const tdAct = document.createElement('td');
     if (r.allOk && r.blob) {
       const a = document.createElement('a');
@@ -916,7 +938,6 @@ async function downloadZip() {
   el.btnZip.textContent = '打包中…';
 
   try {
-    // 使用使用者編輯後的檔名，並對重名去重
     const used = new Set();
     const entries = okList.map((r) => {
       const cleaned = sanitizeFilename(r.outName, defaultOutName(r.name), '.jpg');
@@ -927,7 +948,6 @@ async function downloadZip() {
     const zipBlob = await buildZip(entries);
     const url = URL.createObjectURL(zipBlob);
 
-    // 讀取使用者自訂 ZIP 名稱
     let zipBase = sanitizeFilename(el.zipName.value, CFG.DEFAULT_ZIP, '');
     zipBase = zipBase.replace(/\.zip$/i, '') || CFG.DEFAULT_ZIP;
     const zipFileName = zipBase + '.zip';
@@ -1020,7 +1040,6 @@ el.btnProcess.addEventListener('click', processAll);
 el.btnReset.addEventListener('click', resetAll);
 el.btnZip.addEventListener('click', downloadZip);
 
-// ZIP 檔名：失焦時清理並補 .zip 邏輯
 el.zipName.addEventListener('blur', () => {
   let v = el.zipName.value.replace(/\.zip$/i, '').trim();
   v = sanitizeFilename(v, CFG.DEFAULT_ZIP, '');
@@ -1030,7 +1049,6 @@ el.zipName.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); el.zipName.blur(); }
 });
 
-// 視窗尺寸變化 → 重繪
 let rzTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(rzTimer);
@@ -1046,9 +1064,6 @@ window.addEventListener('resize', () => {
   }, 160);
 });
 
-/* ══════════════════════════════════════════════════════════
-   PWA：註冊 Service Worker
-   ══════════════════════════════════════════════════════════ */
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch((err) => {
