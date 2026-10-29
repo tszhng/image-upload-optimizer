@@ -32,7 +32,7 @@
     <input id="fileInput" type="file" accept="image/*" multiple hidden />
   </section>
 
-  <!-- ═══════════ 階段 2：框選主體 ═══════════ -->
+  <!-- ═══════════ 階段 2：框選主體（可改檔名） ═══════════ -->
   <section id="stageEdit" class="card" hidden>
     <div class="bar">
       <h2>框選主體</h2>
@@ -45,6 +45,7 @@
     <p class="hint">
       拖曳藍框四角可縮放、拖曳框內可移動。<b>請讓藍框緊貼主體</b>，
       系統會自動算出「主體居中且佔比 ≥&nbsp;70%」的 4:3 裁剪區（藍框外的暗區即為最終畫面）。
+      <br>每張卡片上方的檔名欄<b>可直接修改</b>（自動補上 <code>.jpg</code>、過濾非法字元）。
     </p>
     <div id="grid" class="grid"></div>
     <button id="btnProcess" class="btn primary block" type="button">開始處理</button>
@@ -59,15 +60,15 @@
     </div>
   </section>
 
-  <!-- ═══════════ 階段 4：結果（可改名） ═══════════ -->
+  <!-- ═══════════ 階段 4：結果（可再次修改） ═══════════ -->
   <section id="stageResult" class="card" hidden>
     <div class="bar">
       <h2>處理結果</h2>
       <span id="summary" class="muted"></span>
     </div>
     <p class="hint">
-      可直接在表格中修改檔名（不含路徑）。下載時系統會自動補上 <code>.jpg</code>、
-      移除非法字元，並對重名自動加上 <code>_2</code>、<code>_3</code> 後綴。
+      若需再調整，可直接修改表格內的檔名。下載時系統會自動補 <code>.jpg</code>、
+      移除非法字元，並對重名加上 <code>_2</code>、<code>_3</code> 後綴。
     </p>
     <div class="table-wrap">
       <table>
